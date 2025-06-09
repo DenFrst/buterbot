@@ -248,10 +248,7 @@ async def show_recipe(callback_query: types.CallbackQuery):
         reply_markup=builder.as_markup()
     )
         
-check_working_hours()
-
 async def main():
-    check_working_hours()
     logger.info("Бот запущен")
     await dp.start_polling(bot)
 
