@@ -89,7 +89,7 @@ async def generate_with_timeout(prompt, timeout=20):
             await asyncio.sleep(1 if attempt == 0 else 0)
 
 async def generate_breakfasts(user_id):
-    if not check_working_hours():
+    if check_working_hours():
         return ["Бот спит (8:00-22:00 МСК)"] * 6
 
     try:
@@ -108,7 +108,7 @@ async def generate_breakfasts(user_id):
         return [b for b in defaults if b not in last_breakfasts][:6] or defaults[:6]
 
 async def generate_recipe(breakfast_name):
-    if not check_working_hours():
+    if check_working_hours():
         return "Бот отдыхает с 22:00 до 8:00 МСК 😴"
 
     try:
@@ -136,7 +136,7 @@ async def show_main_menu(chat_id):
 
 @dp.message(Command('start'))
 async def send_welcome(message: types.Message):
-    if not check_working_hours():
+    if check_working_hours():
         await message.answer("⏳ Бот работает с 5:00-14:00 и 21:00-2:00 по МСК!")
         return
     await show_main_menu(message.chat.id)
@@ -169,7 +169,7 @@ async def save_feedback(message: types.Message):
 
 @dp.callback_query(lambda c: c.data == "generate")
 async def process_callback(callback_query: types.CallbackQuery):
-    if not check_working_hours():
+    if check_working_hours():
         await callback_query.answer("Бот спит 😴", show_alert=True)
         return
 
@@ -202,7 +202,7 @@ async def process_callback(callback_query: types.CallbackQuery):
 
 @dp.callback_query(lambda c: c.data.startswith("recipe_"))
 async def show_recipe(callback_query: types.CallbackQuery):
-    if not check_working_hours():
+    if check_working_hours():
         await callback_query.answer("Бот спит 😴", show_alert=True)
         return
 
