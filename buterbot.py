@@ -11,7 +11,7 @@ import os
 import logging
 from flask import Flask
 from threading import Thread
-from datetime import datetime
+from datetime import datetime, timezone
 import pytz
 
 # Настройка Flask для пингов
@@ -45,11 +45,25 @@ MODELS = [g4f.models.gpt_4o_mini, g4f.models.deepseek_r1, g4f.models.o3_mini, g4
 current_model_index = 0
 feedback_data = {}  # Для хранения отзывов
 
+def check_working_hours():
+    """Завершает работу бота в нерабочее время"""
+    now = datetime.now(timezone.utc)  # Render использует UTC
+    work_hours = (
+        (5 <= now.hour < 14)    # 08:00-17:00 МСК (UTC+3)
+        or 
+        (21 <= now.hour <= 23)  # 00:00-02:00 МСК
+    )
+    if not work_hours:
+        logger.info("🛑 Закрываюсь до следующего пинга")
+        os._exit(0)
+
 # Проверка рабочего времени (8:00-22:00 по МСК)
 def is_working_time():
     tz = pytz.timezone('Europe/Moscow')
     now = datetime.now(tz)
-    return  (5 <= now.hour < 14) or (21 <= now.hour < 2)  # Работаем 14 часов в день (8:00-22:00)
+    if not (5 <= now.hour < 14) or (21 <= now.hour < 2): # Работаем с 8:00 до 14:00 и с 22:00 до 2:00
+        logger.info("Завершаю работу (не рабочее время)")
+        os._exit(0)  # Полное выключение# 
 
 async def generate_with_timeout(prompt, timeout=20):
     global current_model_index
@@ -235,6 +249,7 @@ async def show_recipe(callback_query: types.CallbackQuery):
         
 
 async def main():
+    check_working_hours()
     logger.info("Бот запущен")
     await dp.start_polling(bot)
 
