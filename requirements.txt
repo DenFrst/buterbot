@@ -1,0 +1,5 @@
+aiogram==3.0.0b7
+flask==2.3.2
+g4f==0.1.8.2
+python-dotenv==1.0.0
+aiohttp==3.8.5

@@ -1,0 +1,14 @@
+# Файлы с секретами
+.env
+config.py
+secrets.json
+
+# Системные файлы
+__pycache__/
+*.py[cod]
+*.log
+*.env
+
+# IDE
+.idea/
+.vscode/
