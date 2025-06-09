@@ -47,7 +47,8 @@ feedback_data = {}  # Для хранения отзывов
 
 def check_working_hours():
     """Завершает работу бота в нерабочее время"""
-    now = datetime.now(timezone.utc)  # Render использует UTC
+    tz = pytz.timezone('Europe/Moscow')
+    now = datetime.now(tz)
     work_hours = (
         (5 <= now.hour < 14)    # 08:00-17:00 МСК (UTC+3)
         or 
