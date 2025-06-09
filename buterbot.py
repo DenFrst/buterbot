@@ -15,9 +15,6 @@ from datetime import datetime, timezone
 import pytz
 import signal
 
-# Убиваем все предыдущие процессы бота
-os.system(f"pkill -f 'python.*{os.path.basename(__file__)}'")
-
 # Настройка Flask для пингов
 app = Flask(__name__)
 
