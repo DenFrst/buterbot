@@ -47,29 +47,24 @@ current_model_index = 0
 feedback_data = {}  # Для хранения отзывов
 
 def check_working_hours():
-    """Завершает работу бота в нерабочее время"""
-    tz = pytz.timezone('Europe/Moscow')
-    now = datetime.now(tz)
-    work_hours = (
-        (5 <= now.hour < 14)    # 08:00-17:00 МСК (UTC+3)
-        or 
-        (21 <= now.hour <= 23)  # 00:00-02:00 МСК
-    )
-    if not work_hours:
-        logger.info("🛑 Закрываюсь до следующего пинга")
-        os._exit(0)
-
-# Проверка рабочего времени (8:00-22:00 по МСК)
-def is_working_time():
-    tz = pytz.timezone('Europe/Moscow')
-    now = datetime.now(tz)
-    is_active = (5 <= now.hour < 14) or (21 <= now.hour <= 23) or (0 <= now.hour < 2)
+    """
+    Проверяет рабочее время в UTC (5:00-14:00 и 21:00-2:00 МСК)
+    Завершает бота, если сейчас нерабочее время
+    """
+    now = datetime.now(timezone.utc)
+    current_hour = now.hour
     
-    if not is_active:
-        logger.info("🛑 Завершаю работу (не рабочее время)")
+    # UTC-эквиваленты для 5:00-14:00 и 21:00-2:00 МСК (UTC+3)
+    is_working_time = (2 <= current_hour < 11) or (18 <= current_hour <= 23) or (0 <= current_hour < 1)
+    
+    if not is_working_time:
+        # Логируем в UTC и МСК для ясности
+        msk_time = now.astimezone(pytz.timezone('Europe/Moscow')).strftime('%H:%M')
+        logger.info(
+            f"🛑 Завершаю работу (UTC: {now.strftime('%H:%M')}, "
+            f"МСК: {msk_time}, нерабочий час)"
+        )
         os._exit(0)
-    return True
-
 
 async def generate_with_timeout(prompt, timeout=20):
     global current_model_index
@@ -94,7 +89,7 @@ async def generate_with_timeout(prompt, timeout=20):
             await asyncio.sleep(1 if attempt == 0 else 0)
 
 async def generate_breakfasts(user_id):
-    if not is_working_time():
+    if not check_working_hours():
         return ["Бот спит (8:00-22:00 МСК)"] * 6
 
     try:
@@ -113,7 +108,7 @@ async def generate_breakfasts(user_id):
         return [b for b in defaults if b not in last_breakfasts][:6] or defaults[:6]
 
 async def generate_recipe(breakfast_name):
-    if not is_working_time():
+    if not check_working_hours():
         return "Бот отдыхает с 22:00 до 8:00 МСК 😴"
 
     try:
@@ -141,7 +136,7 @@ async def show_main_menu(chat_id):
 
 @dp.message(Command('start'))
 async def send_welcome(message: types.Message):
-    if not is_working_time():
+    if not check_working_hours():
         await message.answer("⏳ Бот работает с 5:00-14:00 и 21:00-2:00 по МСК!")
         return
     await show_main_menu(message.chat.id)
@@ -174,7 +169,7 @@ async def save_feedback(message: types.Message):
 
 @dp.callback_query(lambda c: c.data == "generate")
 async def process_callback(callback_query: types.CallbackQuery):
-    if not is_working_time():
+    if not check_working_hours():
         await callback_query.answer("Бот спит 😴", show_alert=True)
         return
 
@@ -207,7 +202,7 @@ async def process_callback(callback_query: types.CallbackQuery):
 
 @dp.callback_query(lambda c: c.data.startswith("recipe_"))
 async def show_recipe(callback_query: types.CallbackQuery):
-    if not is_working_time():
+    if not check_working_hours():
         await callback_query.answer("Бот спит 😴", show_alert=True)
         return
 
@@ -253,6 +248,7 @@ async def show_recipe(callback_query: types.CallbackQuery):
         reply_markup=builder.as_markup()
     )
         
+check_working_hours()
 
 async def main():
     check_working_hours()
