@@ -200,7 +200,7 @@ async def process_callback(callback_query: types.CallbackQuery):
 @dp.callback_query(lambda c: c.data.startswith("recipe_"))
 async def show_recipe(callback_query: types.CallbackQuery):
     check_working_hours()  # Проверяем время
-    if is_working_time():
+    if not is_working_time():
         await callback_query.answer("Бот спит 😴", show_alert=True)
         return
 
