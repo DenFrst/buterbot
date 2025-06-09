@@ -47,18 +47,11 @@ current_model_index = 0
 feedback_data = {}  # Для хранения отзывов
 
 def is_working_time() -> bool:
-    """
-    Проверяет, рабочее ли сейчас время (без завершения процесса)
-    Возвращает True если сейчас рабочее время
-    """
     now = datetime.now(timezone.utc)
     current_hour = now.hour
-    return (2 <= current_hour < 11) or (18 <= current_hour <= 23) or (0 <= current_hour < 1)
+    return (2 <= current_hour < 11) or (18 <= current_hour <= 23)
 
 def check_working_hours():
-    """
-    Завершает работу бота если сейчас нерабочее время
-    """
     if not is_working_time():
         msk_time = datetime.now(timezone.utc).astimezone(
             pytz.timezone('Europe/Moscow')
@@ -139,7 +132,7 @@ async def show_main_menu(chat_id):
 @dp.message(Command('start'))
 async def send_welcome(message: types.Message):
     check_working_hours()  # Проверяем время и завершаемся если нужно
-    if is_working_time():
+    if not is_working_time():
         await message.answer("⏳ Бот работает с 5:00-14:00 и 21:00-2:00 по МСК!")
         return
     await show_main_menu(message.chat.id)
