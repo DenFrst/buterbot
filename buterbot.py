@@ -13,6 +13,10 @@ from flask import Flask
 from threading import Thread
 from datetime import datetime, timezone
 import pytz
+import signal
+
+# Убиваем все предыдущие процессы бота
+os.system(f"pkill -f 'python.*{os.path.basename(__file__)}'")
 
 # Настройка Flask для пингов
 app = Flask(__name__)
@@ -62,9 +66,13 @@ def check_working_hours():
 def is_working_time():
     tz = pytz.timezone('Europe/Moscow')
     now = datetime.now(tz)
-    if not (5 <= now.hour < 14) or (21 <= now.hour < 2): # Работаем с 8:00 до 14:00 и с 22:00 до 2:00
-        logger.info("Завершаю работу (не рабочее время)")
-        os._exit(0)  # Полное выключение# 
+    is_active = (5 <= now.hour < 14) or (21 <= now.hour <= 23) or (0 <= now.hour < 2)
+    
+    if not is_active:
+        logger.info("🛑 Завершаю работу (не рабочее время)")
+        os._exit(0)
+    return True
+
 
 async def generate_with_timeout(prompt, timeout=20):
     global current_model_index
