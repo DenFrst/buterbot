@@ -1,7 +1,7 @@
 import asyncio
 from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command
-from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, ReplyKeyboardMarkup, KeyboardButton
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 from g4f.Provider import RetryProvider
 from g4f import Provider, models
@@ -14,7 +14,9 @@ from threading import Thread
 from datetime import datetime, timezone
 import pytz
 import signal
+import asyncpg
 
+#region Настройки
 # Настройка Flask для пингов
 app = Flask(__name__)
 
@@ -39,26 +41,268 @@ API_TOKEN = os.getenv('TELEGRAM_TOKEN')  # Используем переменн
 bot = Bot(token=API_TOKEN)
 dp = Dispatcher()
 
+# Подключение к DB
+async def get_db():
+    return await asyncpg.connect(os.getenv("DATABASE_URL_FNL"))
+
 # Храним данные пользователей
 user_data = {}
 previous_breakfasts = {}
 MODELS = [g4f.models.gpt_4o_mini, g4f.models.deepseek_r1, g4f.models.o3_mini, g4f.models.gpt_4, g4f.models.gpt_4_1_mini]
 current_model_index = 0
 feedback_data = {}  # Для хранения отзывов
-'''
-def is_working_time() -> bool:
-    now = datetime.now(timezone.utc)
-    current_hour = now.hour
-    return (2 <= current_hour < 11) or (18 <= current_hour <= 23)
+#endregion Настройки
 
-def check_working_hours():
-    if not is_working_time():
-        msk_time = datetime.now(timezone.utc).astimezone(
-            pytz.timezone('Europe/Moscow')
-        ).strftime('%H:%M')
-        logger.info(f"🛑 Завершаю работу (МСК: {msk_time})")
-        os._exit(0)
-'''
+# Кнопки - Главное меню
+async def show_main_menu(chat_id):
+    # Основные кнопки внизу
+    reply_markup = ReplyKeyboardMarkup(
+        keyboard=[
+            [KeyboardButton(text="🍳 Выбрать завтраки"), KeyboardButton(text="⚙️ Настройки аллергенов")],
+            [KeyboardButton(text="⭐ Избранное"), KeyboardButton(text="📝 Отзыв")]
+        ],
+        resize_keyboard=True
+    )
+    # Inline-кнопки для дополнительных действий
+    inline_kb = InlineKeyboardBuilder()
+    inline_kb.add(types.InlineKeyboardButton(
+        text="Популярные завтраки",
+        callback_data="allergy_settings"
+    ))
+    
+    await bot.send_message(
+        chat_id,
+        "Доброе утро! Выберите действие:",
+        reply_markup=reply_markup
+    )
+    await bot.send_message(
+        chat_id,
+        "Дополнительные опции:",
+        reply_markup=inline_kb.as_markup()
+    )
+
+# /Start
+@dp.message(Command('start'))
+async def send_welcome(message: types.Message):
+    await show_main_menu(message.chat.id)
+
+
+#region Аллегены
+# Команда Аллергенов /allergy
+@dp.message(Command('allergy'))
+async def set_allergies(message: types.Message):
+    user_id = message.from_user.id
+    allergies = message.text.replace('/allergy', '').strip()
+    
+    if not allergies:
+        await message.answer("❌ Укажите аллергены через запятую, например: <code>/allergy молоко, глютен, мёд</code>", parse_mode="HTML")
+        return
+    
+    try:
+        conn = await get_db()
+        await conn.execute("""
+            INSERT INTO user_preferences (user_id, allergies)
+            VALUES (%1, %2)
+            ON CONFLICT (user_id) DO UPDATE SET allergies = %2
+        """, (user_id, allergies))
+        await message.answer(f"✅ Ваши аллергены сохранены: <b>{allergies}</b>", parse_mode="HTML")
+    except Exception as e:
+        logger.error(f"Ошибка сохранения аллергенов: {e}")
+        await message.answer("❌ Ошибка. Попробуйте позже.")
+    finally:
+        if conn: await conn.close()
+        
+# Обработка кнопки Аллергенов
+@dp.message(lambda msg: msg.text == "⚙️ Настройки аллергенов")
+async def show_allergies(message: types.Message):
+    user_id = message.from_user.id
+    conn = await get_db()
+    allergies = await conn.fetchval("SELECT allergies FROM user_preferences WHERE user_id = $1", user_id)
+    await conn.close()
+    
+    if allergies:
+        await message.answer(f"Ваши текущие аллергены:\n<code>{allergies}</code>\n\nИзменить: /allergy [новый список]", parse_mode="HTML")
+    else:
+        await message.answer("Вы ещё не добавляли аллергены. Напишите: /allergy [продукты]")
+#endregion Allergy
+
+#region Избранное
+
+# Команда /favorites для просмотра избранного
+@dp.message(Command('favorites'))
+async def show_favorites(message: types.Message):
+    user_id = message.from_user.id
+    try:
+        conn = await get_db()
+        favorites = await conn.fetch("SELECT recipe_name FROM favorites WHERE user_id = $1", user_id)
+        
+        if not favorites:
+            await message.answer("Ваше избранное пусто.")
+            return
+            
+        builder = InlineKeyboardBuilder()
+        for idx, fav in enumerate(favorites, 1):
+            builder.add(types.InlineKeyboardButton(
+                text=f"{idx}. {fav['recipe_name']}",
+                callback_data=f"show_fav_{fav['recipe_name']}"
+            ))
+        builder.adjust(2)
+        await message.answer("⭐ Ваше избранное:", reply_markup=builder.as_markup())
+    except Exception as e:
+        logger.error(f"Ошибка при просмотре избранного: {e}")
+        await message.answer("❌ Ошибка загрузки.")
+    finally:
+        if conn: await conn.close()
+
+# Обработка добавления в избранное
+@dp.callback_query(lambda c: c.data.startswith("add_fav_"))
+async def add_to_favorites(callback_query: types.CallbackQuery):
+    user_id = callback_query.from_user.id
+    recipe_name = callback_query.data.split("_")[2]
+    recipe_text = callback_query.message.text  # Полный текст рецепта
+
+    try:
+        conn = await get_db()
+        await conn.execute("""
+            INSERT INTO favorites (user_id, recipe_name, recipe_text)
+            VALUES ($1, $2, $3)
+            ON CONFLICT (user_id, recipe_name) DO NOTHING
+        """, user_id, recipe_name, recipe_text)
+        await callback_query.answer("✅ Добавлено в избранное!")
+    except Exception as e:
+        logger.error(f"Ошибка: {e}")
+        await callback_query.answer("❌ Не удалось сохранить.")
+    finally:
+        if conn: await conn.close()
+
+#endregion Избранное
+
+#region Отзывы
+@dp.message(lambda msg: msg.text == "📝 Отзыв")
+async def ask_feedback(message: types.Message):
+    markup = InlineKeyboardBuilder()
+    markup.add(types.InlineKeyboardButton(
+        text="❌ Отменить",
+        callback_data="cancel_feedback"
+    ))
+    await message.answer(
+        "Напишите ваш отзыв:",
+        reply_markup=markup.as_markup()
+    )
+    feedback_data[message.from_user.id] = True
+
+@dp.callback_query(lambda c: c.data == "cancel_feedback")
+async def cancel_feedback(callback: types.CallbackQuery):
+    if callback.from_user.id in feedback_data:
+        del feedback_data[callback.from_user.id]
+    await callback.message.edit_text("Отправка отзыва отменена.")
+
+@dp.message(lambda message: message.from_user.id in feedback_data)
+async def save_feedback(message: types.Message):
+    user_id = message.from_user.id
+    try:
+        conn = await get_db()
+        await conn.execute(
+            "INSERT INTO feedbacks (user_id, username, text) VALUES ($1, $2, $3)",
+            user_id, message.from_user.username, message.text
+        )
+        await message.answer("✅ Спасибо за отзыв!")
+    except Exception as e:
+        logger.error(f"Ошибка сохранения отзыва: {e}")
+        await message.answer("❌ Ошибка. Попробуйте позже.")
+    finally:
+        if conn: await conn.close()
+        if user_id in feedback_data: 
+            del feedback_data[user_id]  # Всегда очищаем флаг
+#endregion Отзывы
+
+#region Завтраки
+
+# Обработчик для сообщений
+@dp.message(lambda msg: msg.text == "🍳 Выбрать завтраки")
+async def process_breakfast_message(message: types.Message):
+    await handle_generate_breakfasts(message.from_user.id, message)
+
+# Обработчик для callback-запросов
+@dp.callback_query(lambda c: c.data == "generate")
+async def process_callback(callback_query: types.CallbackQuery):
+    await handle_generate_breakfasts(callback_query.from_user.id, callback_query)
+
+async def handle_generate_breakfasts(user_id, message_or_callback):
+    await message_or_callback.answer("⏳ Генерируем новые варианты завтраков...")
+    loading_msg = await message_or_callback.message.answer("🔄 Идет генерация новых вариантов...")
+    
+    breakfasts = await generate_breakfasts(message_or_callback.from_user.id)
+    user_data[message_or_callback.from_user.id] = breakfasts
+    
+    await bot.delete_message(
+        chat_id=message_or_callback.message.chat.id,
+        message_id=loading_msg.message_id
+    )
+    
+    builder = InlineKeyboardBuilder()
+    for i, breakfast in enumerate(breakfasts, 1):
+        builder.add(types.InlineKeyboardButton(
+            text=f"{i}. {breakfast}",
+            callback_data=f"recipe_{i}"
+        ))
+    builder.add(types.InlineKeyboardButton(
+        text="🔄 Сгенерировать новые варианты",
+        callback_data="generate"
+    ))
+    builder.adjust(2, 2, 2, 1)
+    
+    await message_or_callback.message.answer(
+        "Выбери завтрак:\n" + "\n".join(f"{i}. {b}" for i, b in enumerate(breakfasts, 1)),
+        reply_markup=builder.as_markup()
+    )
+
+#endregion Завтраки
+
+#region Рецепты
+@dp.callback_query(lambda c: c.data.startswith("recipe_"))
+async def show_recipe(callback_query: types.CallbackQuery):
+    await callback_query.answer("⏳ Готовим рецепт...")
+    loading_msg = await callback_query.message.answer("🍳 Готовим рецепт, подождите...")
+    
+    breakfast_num = int(callback_query.data.split("_")[1]) - 1
+    user_id = callback_query.from_user.id
+    
+    if user_id in user_data and 0 <= breakfast_num < len(user_data[user_id]):
+        breakfast_name = user_data[user_id][breakfast_num]
+        recipe = await generate_recipe(breakfast_name, user_id)
+        
+        await bot.delete_message(
+            chat_id=callback_query.message.chat.id,
+            message_id=loading_msg.message_id
+        )
+        
+        builder = InlineKeyboardBuilder()
+        for i, breakfast in enumerate(user_data[user_id], 1):
+            builder.add(types.InlineKeyboardButton(
+                text=f"{i}. {breakfast[:15] + '...' if len(breakfast) > 15 else breakfast}",
+                callback_data=f"recipe_{i}"
+            ))
+        builder.adjust(2, 2, 2)
+        
+    # Новые кнопки управления
+    builder.row(types.InlineKeyboardButton(
+        text="🔄 Новые варианты",
+        callback_data="generate"
+    ))
+    builder.row(
+        types.InlineKeyboardButton(
+            text="⭐ В избранное",
+            callback_data=f"add_fav_{breakfast_name}"
+        )
+    )
+    await callback_query.message.answer(
+        f"🍳 {breakfast_name}\n\n{recipe}",
+        reply_markup=builder.as_markup()
+    )
+#endregion Рецепты
+
+
 async def generate_with_timeout(prompt, timeout=20):
     global current_model_index
     model = MODELS[current_model_index]
@@ -82,13 +326,9 @@ async def generate_with_timeout(prompt, timeout=20):
             await asyncio.sleep(1 if attempt == 0 else 0)
 
 async def generate_breakfasts(user_id):
-   # check_working_hours()  # Проверяем время
-   # if not is_working_time():
-   #     return ["Бот спит (8:00-22:00 МСК)"] * 6
-
     try:
         last_breakfasts = previous_breakfasts.get(user_id, [])
-        prompt = "Напиши 6 вариантов завтраков, только названия через запятую и название каждого завтрака с большой буквы"
+        prompt = "Напиши 6 вариантов завтраков, только названия через запятую и название каждого завтрака с большой буквы на русском"
         if last_breakfasts:
             prompt += f", исключая: {', '.join(last_breakfasts)}"
         
@@ -101,151 +341,30 @@ async def generate_breakfasts(user_id):
         defaults = ["Омлет", "Гранола", "Тосты с авокадо", "Смузи-боул", "Овсянка", "Сырники"]
         return [b for b in defaults if b not in last_breakfasts][:6] or defaults[:6]
 
-async def generate_recipe(breakfast_name):
-  #  check_working_hours()  # Проверяем время
-   # if not is_working_time():
-  #      return "Бот отдыхает с 22:00 до 8:00 МСК 😴"
-
+async def generate_recipe(breakfast_name, user_id):
     try:
-        return await generate_with_timeout(f"Напиши рецепт для {breakfast_name} пункты коротко и ясно, пиши текст без курсива и \"###\" и жирного \"**\" (без markdown или html оформления) ")
+        conn = await get_db()
+        
+        allergies = await conn.fetchval(
+            "SELECT allergies FROM user_preferences WHERE user_id = $1",
+            user_id
+        )
+        allergies = allergies if allergies else ""
+        
+        prompt = (
+            f"Напиши рецепт для {breakfast_name}. "
+            f"Полностью исключи следующие продукты (аллергены): {allergies}. "
+            "Пункты коротко и ясно, без оформления (без markdown или html)."
+        )
+        return await generate_with_timeout(prompt)
     except Exception as e:
         logger.error(f"Ошибка при генерации рецепта: {str(e)}")
         return "Не удалось получить рецепт. Попробуйте снова."
+    finally:
+        if conn: await conn.close()
 
-# Главное меню
-async def show_main_menu(chat_id):
-    builder = InlineKeyboardBuilder()
-    builder.add(types.InlineKeyboardButton(
-        text="🍳 Выбрать завтрак",
-        callback_data="generate"
-    ))
-    builder.add(types.InlineKeyboardButton(
-        text="📝 Оставить отзыв",
-        callback_data="feedback"
-    ))
-    await bot.send_message(
-        chat_id,
-        "Доброе утро! Нажми кнопку для выбора завтрака:",
-        reply_markup=builder.as_markup()
-    )
 
-@dp.message(Command('start'))
-async def send_welcome(message: types.Message):
-   # check_working_hours()  # Проверяем время и завершаемся если нужно
-   # if not is_working_time():
-   #     await message.answer("⏳ Бот работает с 5:00-14:00 и 21:00-2:00 по МСК!")
-   #     return
-    await show_main_menu(message.chat.id)
-    
-@dp.callback_query(lambda c: c.data == "main_menu")
-async def back_to_menu(callback_query: types.CallbackQuery):
-    await callback_query.answer()
-    await show_main_menu(callback_query.message.chat.id)
-    
-@dp.callback_query(lambda c: c.data == "feedback")
-async def ask_feedback(callback_query: types.CallbackQuery):
-    await callback_query.answer()
-    await callback_query.message.answer(
-        "Напишите ваш отзыв о работе бота:",
-        reply_markup=InlineKeyboardBuilder()
-            .add(types.InlineKeyboardButton(text="↩️ Назад", callback_data="main_menu"))
-            .as_markup()
-    )
-    feedback_data[callback_query.from_user.id] = True
 
-@dp.message(lambda message: message.from_user.id in feedback_data)
-async def save_feedback(message: types.Message):
-    user_id = message.from_user.id
-    feedback = message.text
-    logger.info(f"Отзыв от {user_id}: {feedback}")
-    del feedback_data[user_id]
-    await message.answer("Спасибо за отзыв!", reply_markup=InlineKeyboardBuilder()
-        .add(types.InlineKeyboardButton(text="В меню", callback_data="main_menu"))
-        .as_markup())
-
-@dp.callback_query(lambda c: c.data == "generate")
-async def process_callback(callback_query: types.CallbackQuery):
-  #  check_working_hours()  # Проверяем время
-  #  if not is_working_time():
-  #      await callback_query.answer("Бот спит 😴", show_alert=True)
-  #      return
-
-    await callback_query.answer("⏳ Генерируем новые варианты завтраков...")
-    loading_msg = await callback_query.message.answer("🔄 Идет генерация новых вариантов...")
-    breakfasts = await generate_breakfasts(callback_query.from_user.id)
-    user_data[callback_query.from_user.id] = breakfasts
-    
-    await bot.delete_message(
-        chat_id=callback_query.message.chat.id,
-        message_id=loading_msg.message_id
-    )
-    
-    builder = InlineKeyboardBuilder()
-    for i, breakfast in enumerate(breakfasts, 1):
-        builder.add(types.InlineKeyboardButton(
-            text=f"{i}. {breakfast}",
-            callback_data=f"recipe_{i}"
-        ))
-    builder.add(types.InlineKeyboardButton(
-        text="🔄 Сгенерировать новые варианты",
-        callback_data="generate"
-    ))
-    builder.adjust(2, 2, 2, 1)
-    
-    await callback_query.message.answer(
-        "Выбери завтрак:\n" + "\n".join(f"{i}. {b}" for i, b in enumerate(breakfasts, 1)),
-        reply_markup=builder.as_markup()
-    )
-
-@dp.callback_query(lambda c: c.data.startswith("recipe_"))
-async def show_recipe(callback_query: types.CallbackQuery):
-  #  check_working_hours()  # Проверяем время
-  #  if not is_working_time():
-  #      await callback_query.answer("Бот спит 😴", show_alert=True)
-  #      return
-
-    await callback_query.answer("⏳ Готовим рецепт...")
-    loading_msg = await callback_query.message.answer("🍳 Готовим рецепт, подождите...")
-    
-    breakfast_num = int(callback_query.data.split("_")[1]) - 1
-    user_id = callback_query.from_user.id
-    
-    if user_id in user_data and 0 <= breakfast_num < len(user_data[user_id]):
-        breakfast_name = user_data[user_id][breakfast_num]
-        recipe = await generate_recipe(breakfast_name)
-        
-        await bot.delete_message(
-            chat_id=callback_query.message.chat.id,
-            message_id=loading_msg.message_id
-        )
-        
-        builder = InlineKeyboardBuilder()
-        for i, breakfast in enumerate(user_data[user_id], 1):
-            builder.add(types.InlineKeyboardButton(
-                text=f"{i}. {breakfast[:15] + '...' if len(breakfast) > 15 else breakfast}",
-                callback_data=f"recipe_{i}"
-            ))
-        builder.adjust(2, 2, 2)
-        
-    # Новые кнопки управления
-    builder.row(types.InlineKeyboardButton(
-        text="🔄 Новые варианты",
-        callback_data="generate"
-    ))
-    builder.row(types.InlineKeyboardButton(
-        text="📝 Отзыв",
-        callback_data="feedback"
-    ))
-    builder.row(types.InlineKeyboardButton(
-        text="🏠 В меню",
-        callback_data="main_menu"
-    ))
-    
-    await callback_query.message.answer(
-        f"🍳 {breakfast_name}\n\n{recipe}",
-        reply_markup=builder.as_markup()
-    )
-        
 async def main():
     logger.info("Бот запущен")
     await dp.start_polling(bot)
