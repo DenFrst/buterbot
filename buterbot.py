@@ -284,53 +284,58 @@ async def handle_generate_breakfasts(user_id, message_or_callback):
 @dp.callback_query(lambda c: c.data.startswith("recipe_"))
 async def show_recipe(callback_query: types.CallbackQuery):
     await callback_query.answer("⏳ Готовим рецепт...")
-    loading_msg = await callback_query.message.answer("🍳 Готовим рецепт, подождите...")
     
-    breakfast_num = int(callback_query.data.split("_")[1]) - 1
+    try:
+        breakfast_num = int(callback_query.data.split("_")[1]) - 1  # "recipe_1" → 0
+    except (IndexError, ValueError):
+        await callback_query.message.answer("❌ Ошибка: неверный номер завтрака.")
+        return
+
     user_id = callback_query.from_user.id
+
+    # Проверяем структуру user_data
+    if user_id not in user_data:
+        await callback_query.message.answer("❌ Данные устарели. Сгенерируйте завтраки заново.")
+        return
+
+    # Убедимся, что 'breakfasts' существует и это СПИСОК
+    if 'breakfasts' not in user_data[user_id] or not isinstance(user_data[user_id]['breakfasts'], list):
+        await callback_query.message.answer("❌ Ошибка данных. Попробуйте сгенерировать завтраки заново.")
+        return
+
+    breakfasts = user_data[user_id]['breakfasts']  # Получаем список завтраков
+
+    # Проверяем, что breakfasts не пустой и номер корректен
+    if not breakfasts or not (0 <= breakfast_num < len(breakfasts)):
+        await callback_query.message.answer(f"❌ Нет завтрака с таким номером. Доступно: {len(breakfasts)} вариантов.")
+        return
+
+    # Основная логика
+    breakfast_name = breakfasts[breakfast_num]
+    recipe = await generate_recipe(breakfast_name, user_id)
     
+    # Создаем клавиатуру
     builder = InlineKeyboardBuilder()
-    
-    if user_id in user_data and 0 <= breakfast_num < len(user_data[user_id]):
-        breakfast_name = user_data[user_id][breakfast_num]
-        recipe = await generate_recipe(breakfast_name, user_id)
-        
-        await bot.delete_message(
-            chat_id=callback_query.message.chat.id,
-            message_id=loading_msg.message_id
-        )
-        
-        for i, breakfast in enumerate(user_data[user_id], 1):
-            builder.add(types.InlineKeyboardButton(
-                text=f"{i}. {breakfast[:15] + '...' if len(breakfast) > 15 else breakfast}",
-                callback_data=f"recipe_{i}"
-            ))
-        builder.adjust(2, 2, 2)
-        
-        # Кнопки управления
-        builder.row(types.InlineKeyboardButton(
-            text="🔄 Новые варианты",
-            callback_data="generate"
+    for i, breakfast in enumerate(breakfasts, 1):
+        builder.add(types.InlineKeyboardButton(
+            text=f"{i}. {breakfast[:15] + '...' if len(breakfast) > 15 else breakfast}",
+            callback_data=f"recipe_{i}"
         ))
-        builder.row(
-            types.InlineKeyboardButton(
-                text="⭐ В избранное",
-                callback_data=f"add_fav_{breakfast_name}"
-            )
-        )
-        await callback_query.message.answer(
-            f"🍳 {breakfast_name}\n\n{recipe}",
-            reply_markup=builder.as_markup()
-        )
-    else:
-        await callback_query.message.answer("⚠️ Завтрак не найден. Попробуйте сгенерировать новые варианты.")
-        try:
-            await bot.delete_message(
-                chat_id=callback_query.message.chat.id,
-                message_id=loading_msg.message_id
-            )
-        except:
-            pass
+    builder.adjust(2, 2, 2)
+    
+    builder.row(types.InlineKeyboardButton(
+        text="🔄 Новые варианты",
+        callback_data="generate"
+    ))
+    builder.row(types.InlineKeyboardButton(
+        text="⭐ В избранное",
+        callback_data=f"add_fav_{breakfast_name}"
+    ))
+    
+    await callback_query.message.answer(
+        f"🍳 {breakfast_name}\n\n{recipe}",
+        reply_markup=builder.as_markup()
+    )
 #endregion Рецепты
 
 
