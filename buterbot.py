@@ -289,6 +289,8 @@ async def show_recipe(callback_query: types.CallbackQuery):
     breakfast_num = int(callback_query.data.split("_")[1]) - 1
     user_id = callback_query.from_user.id
     
+    builder = InlineKeyboardBuilder()
+    
     if user_id in user_data and 0 <= breakfast_num < len(user_data[user_id]):
         breakfast_name = user_data[user_id][breakfast_num]
         recipe = await generate_recipe(breakfast_name, user_id)
@@ -298,7 +300,6 @@ async def show_recipe(callback_query: types.CallbackQuery):
             message_id=loading_msg.message_id
         )
         
-        builder = InlineKeyboardBuilder()
         for i, breakfast in enumerate(user_data[user_id], 1):
             builder.add(types.InlineKeyboardButton(
                 text=f"{i}. {breakfast[:15] + '...' if len(breakfast) > 15 else breakfast}",
@@ -306,21 +307,30 @@ async def show_recipe(callback_query: types.CallbackQuery):
             ))
         builder.adjust(2, 2, 2)
         
-    # Новые кнопки управления
-    builder.row(types.InlineKeyboardButton(
-        text="🔄 Новые варианты",
-        callback_data="generate"
-    ))
-    builder.row(
-        types.InlineKeyboardButton(
-            text="⭐ В избранное",
-            callback_data=f"add_fav_{breakfast_name}"
+        # Кнопки управления
+        builder.row(types.InlineKeyboardButton(
+            text="🔄 Новые варианты",
+            callback_data="generate"
+        ))
+        builder.row(
+            types.InlineKeyboardButton(
+                text="⭐ В избранное",
+                callback_data=f"add_fav_{breakfast_name}"
+            )
         )
-    )
-    await callback_query.message.answer(
-        f"🍳 {breakfast_name}\n\n{recipe}",
-        reply_markup=builder.as_markup()
-    )
+        await callback_query.message.answer(
+            f"🍳 {breakfast_name}\n\n{recipe}",
+            reply_markup=builder.as_markup()
+        )
+    else:
+        await callback_query.message.answer("⚠️ Завтрак не найден. Попробуйте сгенерировать новые варианты.")
+        try:
+            await bot.delete_message(
+                chat_id=callback_query.message.chat.id,
+                message_id=loading_msg.message_id
+            )
+        except:
+            pass
 #endregion Рецепты
 
 
