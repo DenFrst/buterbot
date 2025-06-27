@@ -75,11 +75,11 @@ async def show_main_menu(chat_id):
         "Доброе утро! Выберите действие:",
         reply_markup=reply_markup
     )
-    await bot.send_message(
-        chat_id,
-        "Дополнительные опции:",
-        reply_markup=inline_kb.as_markup()
-    )
+    #await bot.send_message(
+    #    chat_id,
+   #     "Дополнительные опции:",
+   #     reply_markup=inline_kb.as_markup()
+   # )
 
 # /Start
 @dp.message(Command('start'))
