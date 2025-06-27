@@ -123,7 +123,7 @@ async def show_allergies(message: types.Message):
     if allergies:
         await message.answer(f"Ваши текущие аллергены:\n<code>{allergies}</code>\n\nИзменить: /allergy [новый список]", parse_mode="HTML")
     else:
-        await message.answer("Вы ещё не добавляли аллергены. Напишите: <code>/allergy молоко, глютен, мёд</code>")
+        await message.answer("Вы ещё не добавляли аллергены. Напишите: <code>/allergy молоко, глютен, мёд</code>", parse_mode="HTML")
 #endregion Allergy
 
 #region Избранное
@@ -232,8 +232,8 @@ async def handle_generate_breakfasts(user_id, message_or_callback):
     await message_or_callback.answer("⏳ Генерируем новые варианты завтраков...")
     loading_msg = await message_or_callback.message.answer("🔄 Идет генерация новых вариантов...")
     
-    breakfasts = await generate_breakfasts(message_or_callback.from_user.id)
-    user_data[message_or_callback.from_user.id] = breakfasts
+    breakfasts = await generate_breakfasts(user_id)
+    user_data[user_id] = breakfasts
     
     await bot.delete_message(
         chat_id=message_or_callback.message.chat.id,
