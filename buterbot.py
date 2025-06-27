@@ -88,14 +88,15 @@ async def send_welcome(message: types.Message):
 
 
 #region Аллегены
-# Команда Аллергенов /allergy
+# Обновленный обработчик команды /allergy
 @dp.message(Command('allergy'))
 async def set_allergies(message: types.Message):
     user_id = message.from_user.id
     allergies = message.text.replace('/allergy', '').strip()
     
     if not allergies:
-        await message.answer("❌ Укажите аллергены через запятую, например: <code>/allergy молоко, глютен, мёд</code>", parse_mode="HTML")
+        # Показываем текущие настройки без зацикливания
+        await show_allergy_settings(user_id, message)
         return
     
     try:
@@ -105,39 +106,172 @@ async def set_allergies(message: types.Message):
             VALUES ($1, $2)
             ON CONFLICT (user_id) DO UPDATE SET allergies = EXCLUDED.allergies
         """, user_id, allergies)
-        await message.answer(f"✅ Ваши аллергены сохранены: <b>{allergies}</b>", parse_mode="HTML")
+        
+        builder = InlineKeyboardBuilder()
+        builder.row(types.InlineKeyboardButton(
+            text="⚙️ Показать настройки",
+            callback_data="show_allergy_settings"
+        ))
+        
+        await message.answer(
+            f"✅ <b>Список аллергенов обновлён</b>\n\n"
+            f"<code>{allergies}</code>\n\n"
+            f"Теперь бот будет учитывать их при генерации рецептов",
+            reply_markup=builder.as_markup(),
+            parse_mode="HTML"
+        )
     except Exception as e:
         logger.error(f"Ошибка сохранения аллергенов: {e}")
-        await message.answer("❌ Ошибка. Попробуйте позже.")
+        await message.answer("❌ Произошла ошибка. Попробуйте позже.")
     finally:
         if conn: await conn.close()
-        
-# Обработка кнопки Аллергенов
+
+# Обработчик кнопки настроек аллергенов
 @dp.message(lambda msg: msg.text == "⚙️ Настройки аллергенов")
-async def show_allergies(message: types.Message):
-    user_id = message.from_user.id
+async def show_allergies_button(message: types.Message):
+    await show_allergy_settings(message.from_user.id, message)
+
+# Общая функция для отображения настроек
+async def show_allergy_settings(user_id, message_or_callback):
     conn = await get_db()
-    allergies = await conn.fetchval("SELECT allergies FROM user_preferences WHERE user_id = $1", user_id)
+    current_allergies = await conn.fetchval(
+        "SELECT allergies FROM user_preferences WHERE user_id = $1", 
+        user_id
+    )
     await conn.close()
     
-    if allergies:
-        await message.answer(f"Ваши текущие аллергены:\n<code>{allergies}</code>\n\nИзменить: /allergy [новый список]", parse_mode="HTML")
+    builder = InlineKeyboardBuilder()
+    if current_allergies:
+        builder.row(types.InlineKeyboardButton(
+            text="❌ Очистить аллергены",
+            callback_data="clear_allergies"
+        ))
+    builder.row(types.InlineKeyboardButton(
+        text="✏️ Изменить список",
+        callback_data="edit_allergies"
+    ))
+    
+    text = "⚙️ <b>Управление аллергенами</b>\n\n"
+    if current_allergies:
+        text += f"Текущий список:\n<code>{current_allergies}</code>\n\n"
+        text += "Чтобы изменить, отправьте:\n<code>/allergy новый список</code>"
     else:
-        await message.answer("Вы ещё не добавляли аллергены. Напишите: <code>/allergy молоко, глютен, мёд</code>", parse_mode="HTML")
+        text += "Аллергены не указаны\n\n"
+        text += "Добавьте через запятую:\n<code>/allergy молоко, глютен</code>"
+    
+    if isinstance(message_or_callback, types.CallbackQuery):
+        await message_or_callback.message.edit_text(
+            text,
+            reply_markup=builder.as_markup(),
+            parse_mode="HTML"
+        )
+    else:
+        await message_or_callback.answer(
+            text,
+            reply_markup=builder.as_markup(),
+            parse_mode="HTML"
+        )
+
+# Обработчики callback
+@dp.callback_query(lambda c: c.data == "show_allergy_settings")
+async def show_settings_callback(callback_query: types.CallbackQuery):
+    await show_allergy_settings(callback_query.from_user.id, callback_query)
+
+@dp.callback_query(lambda c: c.data == "clear_allergies")
+async def clear_allergies(callback_query: types.CallbackQuery):
+    user_id = callback_query.from_user.id
+    try:
+        conn = await get_db()
+        await conn.execute(
+            "UPDATE user_preferences SET allergies = NULL WHERE user_id = $1",
+            user_id
+        )
+        await callback_query.answer("✅ Список аллергенов очищен")
+        await show_allergy_settings(user_id, callback_query)
+    except Exception as e:
+        logger.error(f"Ошибка очистки аллергенов: {e}")
+        await callback_query.answer("❌ Ошибка при очистке")
+    finally:
+        if conn: await conn.close()
+
+@dp.callback_query(lambda c: c.data == "edit_allergies")
+async def edit_allergies(callback_query: types.CallbackQuery):
+    await callback_query.answer()
+    await callback_query.message.answer(
+        "✏️ <b>Редактирование аллергенов</b>\n\n"
+        "Пришлите новый список через запятую:\n"
+        "<code>/allergy молоко, глютен, мёд</code>\n\n"
+        "Или нажмите /cancel чтобы отменить",
+        parse_mode="HTML"
+    )
 #endregion Allergy
 
 #region Избранное
 
-# Команда /favorites для просмотра избранного
-@dp.message(Command('favorites'))
-async def show_favorites(message: types.Message):
-    user_id = message.from_user.id
+# Обработчик кнопки "⭐ Избранное"
+@dp.message(lambda msg: msg.text == "⭐ Избранное")
+async def show_favorites_button(message: types.Message):
+    await handle_show_favorites(message.from_user.id, message)
+
+# Обработчик callback для избранных рецептов
+@dp.callback_query(lambda c: c.data.startswith("show_fav_"))
+async def show_favorite_recipe(callback_query: types.CallbackQuery):
+    try:
+        recipe_name = callback_query.data.split("_", 2)[2]
+        user_id = callback_query.from_user.id
+        
+        # Получаем полный рецепт из базы
+        conn = await get_db()
+        recipe = await conn.fetchrow(
+            "SELECT recipe_text FROM favorites WHERE user_id = $1 AND recipe_name = $2",
+            user_id, recipe_name
+        )
+        
+        if recipe:
+            # Кнопки для управления
+            builder = InlineKeyboardBuilder()
+            builder.add(types.InlineKeyboardButton(
+                text="🗑 Удалить из избранного",
+                callback_data=f"del_fav_{recipe_name}"
+            ))
+            builder.add(types.InlineKeyboardButton(
+                text="⬅️ Назад к списку",
+                callback_data="back_to_favorites"
+            ))
+            
+            await callback_query.message.edit_text(
+                f"{recipe['recipe_text']}",
+                reply_markup=builder.as_markup()
+            )
+        else:
+            await callback_query.answer("Рецепт не найден")
+            
+    except Exception as e:
+        logger.error(f"Ошибка показа рецепта: {e}")
+        await callback_query.answer("❌ Ошибка загрузки")
+    finally:
+        if conn: await conn.close()
+
+# Обработчик возврата к списку избранного
+@dp.callback_query(lambda c: c.data == "back_to_favorites")
+async def back_to_favorites(callback_query: types.CallbackQuery):
+    await handle_show_favorites(callback_query.from_user.id, callback_query)
+
+# Общая функция для отображения избранного
+async def handle_show_favorites(user_id, message_or_callback):
     try:
         conn = await get_db()
-        favorites = await conn.fetch("SELECT recipe_name FROM favorites WHERE user_id = $1", user_id)
+        favorites = await conn.fetch(
+            "SELECT recipe_name FROM favorites WHERE user_id = $1", 
+            user_id
+        )
         
         if not favorites:
-            await message.answer("Ваше избранное пусто.")
+            text = "Ваше избранное пусто."
+            if isinstance(message_or_callback, types.CallbackQuery):
+                await message_or_callback.message.edit_text(text)
+            else:
+                await message_or_callback.answer(text)
             return
             
         builder = InlineKeyboardBuilder()
@@ -147,34 +281,138 @@ async def show_favorites(message: types.Message):
                 callback_data=f"show_fav_{fav['recipe_name']}"
             ))
         builder.adjust(2)
-        await message.answer("⭐ Ваше избранное:", reply_markup=builder.as_markup())
+        
+        text = "⭐ Ваше избранное:"
+        if isinstance(message_or_callback, types.CallbackQuery):
+            await message_or_callback.message.edit_text(
+                text,
+                reply_markup=builder.as_markup()
+            )
+        else:
+            await message_or_callback.answer(
+                text,
+                reply_markup=builder.as_markup()
+            )
+            
     except Exception as e:
-        logger.error(f"Ошибка при просмотре избранного: {e}")
-        await message.answer("❌ Ошибка загрузки.")
+        logger.error(f"Ошибка загрузки избранного: {e}")
+        error_text = "❌ Ошибка загрузки избранного"
+        if isinstance(message_or_callback, types.CallbackQuery):
+            await message_or_callback.message.answer(error_text)
+        else:
+            await message_or_callback.answer(error_text)
     finally:
         if conn: await conn.close()
-
-# Обработка добавления в избранное
+        
 @dp.callback_query(lambda c: c.data.startswith("add_fav_"))
 async def add_to_favorites(callback_query: types.CallbackQuery):
     user_id = callback_query.from_user.id
-    recipe_name = callback_query.data.split("_")[2]
-    recipe_text = callback_query.message.text  # Полный текст рецепта
-
     try:
+        recipe_name = callback_query.data.split("_", 2)[2]
+        
+        recipe_text = callback_query.message.text.split("\n\n")[-1]
+        
         conn = await get_db()
-        await conn.execute("""
-            INSERT INTO favorites (user_id, recipe_name, recipe_text)
-            VALUES ($1, $2, $3)
-            ON CONFLICT (user_id, recipe_name) DO NOTHING
-        """, user_id, recipe_name, recipe_text)
-        await callback_query.answer("✅ Добавлено в избранное!")
+        # Проверяем, нет ли уже такого рецепта в избранном
+        exists = await conn.fetchval(
+            "SELECT 1 FROM favorites WHERE user_id = $1 AND recipe_name = $2",
+            user_id, recipe_name
+        )
+        
+        if exists:
+            await callback_query.answer("⚠️ Этот рецепт уже в избранном")
+            return
+            
+        await conn.execute(
+            "INSERT INTO favorites (user_id, recipe_name, recipe_text) VALUES ($1, $2, $3)",
+            user_id, recipe_name, recipe_text
+        )
+        
+        # Обновляем кнопку
+        builder = InlineKeyboardBuilder()
+        builder.row(types.InlineKeyboardButton(
+            text="⭐ Уже в избранном",
+            callback_data="already_fav"
+        ))
+        builder.row(types.InlineKeyboardButton(
+            text="⬅️ Назад",
+            callback_data="back_to_list"
+        ))
+        
+        await callback_query.message.edit_reply_markup(
+            reply_markup=builder.as_markup()
+        )
+        await callback_query.answer(f"✅ {recipe_name} добавлен в избранное")
+        
     except Exception as e:
-        logger.error(f"Ошибка: {e}")
-        await callback_query.answer("❌ Не удалось сохранить.")
+        logger.error(f"Ошибка добавления в избранное: {e}")
+        await callback_query.answer("❌ Не удалось добавить в избранное")
     finally:
         if conn: await conn.close()
 
+@dp.callback_query(lambda c: c.data == "already_fav")
+async def already_favorite(callback_query: types.CallbackQuery):
+    await callback_query.answer("Этот рецепт уже в вашем избранном")
+
+@dp.callback_query(lambda c: c.data.startswith("del_fav_"))
+async def delete_favorite(callback_query: types.CallbackQuery):
+    user_id = callback_query.from_user.id
+    try:
+        recipe_name = callback_query.data.split("_", 2)[2]
+        conn = await get_db()
+        
+        # Удаляем рецепт из избранного
+        await conn.execute(
+            "DELETE FROM favorites WHERE user_id = $1 AND recipe_name = $2",
+            user_id, recipe_name
+        )
+        
+        # Показываем обновленный список избранного
+        await callback_query.answer(f"❌ {recipe_name} удален из избранного")
+        await handle_show_favorites(user_id, callback_query)
+        
+    except Exception as e:
+        logger.error(f"Ошибка удаления из избранного: {e}")
+        await callback_query.answer("❌ Не удалось удалить рецепт")
+    finally:
+        if conn: await conn.close()
+
+@dp.callback_query(lambda c: c.data == "back_to_list")
+async def back_to_list_handler(callback_query: types.CallbackQuery):
+    try:
+        await callback_query.message.delete()
+        await callback_query.answer()
+    except Exception as e:
+        logger.error(f"Ошибка при удалении сообщения: {e}")
+        await callback_query.answer("❌ Не удалось вернуться")
+        '''
+        user_id = callback_query.from_user.id
+
+        # Получаем список всех завтраков пользователя
+        breakfasts = user_data[user_id]['breakfasts']  # Из ранее сгенерированных вариантов
+        
+        builder = InlineKeyboardBuilder()
+        for i, breakfast in enumerate(breakfasts, 1):
+            builder.add(types.InlineKeyboardButton(
+                text=f"{i}. {breakfast[:15] + '...' if len(breakfast) > 15 else breakfast}",
+                callback_data=f"recipe_{i}"
+            ))
+        builder.adjust(2, 2, 2)
+        
+        builder.row(types.InlineKeyboardButton(
+            text="🔄 Новые варианты",
+            callback_data="generate"
+        ))
+        
+        await callback_query.message.edit_text(
+            "Выбери завтрак:\n" + "\n".join(f"{i}. {b}" for i, b in enumerate(breakfasts, 1)),
+            reply_markup=builder.as_markup()
+        )
+        
+    except Exception as e:
+        logger.error(f"Ошибка возврата к списку: {e}")
+        await callback_query.answer("❌ Ошибка загрузки списка")
+        '''
 #endregion Избранное
 
 #region Отзывы
@@ -333,7 +571,7 @@ async def show_recipe(callback_query: types.CallbackQuery):
     ))
     
     await callback_query.message.answer(
-        f"🍳 {breakfast_name}\n\n{recipe}",
+        f"🍳 {recipe}", 
         reply_markup=builder.as_markup()
     )
 #endregion Рецепты
@@ -363,10 +601,28 @@ async def generate_with_timeout(prompt, timeout=20):
 
 async def generate_breakfasts(user_id):
     try:
+        try:
+            conn = await get_db()
+            current_allergies = await conn.fetchval(
+                "SELECT allergies FROM user_preferences WHERE user_id = $1", 
+                user_id
+            )
+            await conn.close()
+        except Exception as e:
+            logger.error(f"Ошибка при получении allergy in generate_breakfasts: {str(e)}")
+            current_allergies = ""
         last_breakfasts = previous_breakfasts.get(user_id, [])
-        prompt = "Напиши 6 вариантов завтраков, только названия через запятую и название каждого завтрака с большой буквы на русском"
-        if last_breakfasts:
-            prompt += f", исключая: {', '.join(last_breakfasts)}"
+        prompt = (
+            "Сгенерируй 6 вариантов завтраков на русском языке. Требования:\n"
+            "1. Только названия через запятую\n"
+            "2. Каждое название с большой буквы\n"
+            "3. Полностью исключи следующие ингредиенты: " 
+            f"{current_allergies if current_allergies else 'отсутствуют'}\n"
+            "4. В названиях не должно содержаться этих ингредиентов даже частично\n"
+            f"{'5. Исключи эти варианты: ' + ', '.join(last_breakfasts) if last_breakfasts else ''}\n"
+            "6. Названия должны быть аппетитными и разнообразными\n"
+            "Формат: Название1, Название2, Название3"
+        )
         
         response = await generate_with_timeout(prompt)
         new_breakfasts = [b.strip() for b in response.split(',')[:6]]
@@ -388,10 +644,10 @@ async def generate_recipe(breakfast_name, user_id):
         allergies = allergies if allergies else ""
         
         prompt = (
-            f"Напиши рецепт для {breakfast_name}. "
-            f"Полностью исключи следующие продукты (аллергены): {allergies}. "
+            f"Напиши рецепт для {breakfast_name}." +
+            (f" Полностью исключи следующие продукты (аллергены): {allergies}." if allergies else "") +
             "Пункты коротко и ясно, без оформления (без markdown или html)."
-        )
+            )
         return await generate_with_timeout(prompt)
     except Exception as e:
         logger.error(f"Ошибка при генерации рецепта: {str(e)}")
