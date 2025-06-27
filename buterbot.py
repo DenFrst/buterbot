@@ -100,11 +100,11 @@ async def set_allergies(message: types.Message):
     
     try:
         conn = await get_db()
-        await conn.execute("""
+        await conn.execute('''
             INSERT INTO user_preferences (user_id, allergies)
-            VALUES (%1, %2)
-            ON CONFLICT (user_id) DO UPDATE SET allergies = %2
-        """, (user_id, allergies))
+            VALUES ($1, $2)
+            ON CONFLICT (user_id) DO UPDATE SET allergies = $2
+        ''', (user_id, allergies))
         await message.answer(f"✅ Ваши аллергены сохранены: <b>{allergies}</b>", parse_mode="HTML")
     except Exception as e:
         logger.error(f"Ошибка сохранения аллергенов: {e}")
