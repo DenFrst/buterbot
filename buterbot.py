@@ -229,33 +229,54 @@ async def process_callback(callback_query: types.CallbackQuery):
     await handle_generate_breakfasts(callback_query.from_user.id, callback_query)
 
 async def handle_generate_breakfasts(user_id, message_or_callback):
-    await message_or_callback.answer("⏳ Генерируем новые варианты завтраков...")
-    loading_msg = await message_or_callback.message.answer("🔄 Идет генерация новых вариантов...")
-    
-    breakfasts = await generate_breakfasts(user_id)
-    user_data[user_id] = breakfasts
-    
-    await bot.delete_message(
-        chat_id=message_or_callback.message.chat.id,
-        message_id=loading_msg.message_id
-    )
-    
-    builder = InlineKeyboardBuilder()
-    for i, breakfast in enumerate(breakfasts, 1):
+    try:
+        # Отправка начального сообщения
+        if isinstance(message_or_callback, types.CallbackQuery):
+            message = message_or_callback.message
+            await message_or_callback.answer("⏳ Генерируем новые варианты завтраков...")
+        else:
+            message = message_or_callback
+            await message.answer("⏳ Генерируем новые варианты завтраков...")
+
+        loading_msg = await message.answer("🔄 Идет генерация новых вариантов...")
+        
+        breakfasts = await generate_breakfasts(user_id)
+        
+        # Инициализация user_data если нужно
+        if user_id not in user_data:
+            user_data[user_id] = {}
+        user_data[user_id]['breakfasts'] = breakfasts
+        
+        # Удаление сообщения о загрузке с обработкой ошибок
+        try:
+            await bot.delete_message(
+                chat_id=message.chat.id,
+                message_id=loading_msg.message_id
+            )
+        except Exception as e:
+            print(f"Ошибка при удалении сообщения: {e}")
+        
+        builder = InlineKeyboardBuilder()
+        for i, breakfast in enumerate(breakfasts, 1):
+            builder.add(types.InlineKeyboardButton(
+                text=f"{i}. {breakfast}",
+                callback_data=f"recipe_{i}"
+            ))
         builder.add(types.InlineKeyboardButton(
-            text=f"{i}. {breakfast}",
-            callback_data=f"recipe_{i}"
+            text="🔄 Сгенерировать новые варианты",
+            callback_data="generate"
         ))
-    builder.add(types.InlineKeyboardButton(
-        text="🔄 Сгенерировать новые варианты",
-        callback_data="generate"
-    ))
-    builder.adjust(2, 2, 2, 1)
+        builder.adjust(2, 2, 2, 1)
+        
+        await message.answer(
+            "Выбери завтрак:\n" + "\n".join(f"{i}. {b}" for i, b in enumerate(breakfasts, 1)),
+            reply_markup=builder.as_markup()
+        )
     
-    await message_or_callback.message.answer(
-        "Выбери завтрак:\n" + "\n".join(f"{i}. {b}" for i, b in enumerate(breakfasts, 1)),
-        reply_markup=builder.as_markup()
-    )
+    except Exception as e:
+        print(f"Ошибка в handle_generate_breakfasts: {e}")
+        # Можно добавить обработку ошибки для пользователя
+        await message.answer("⚠️ Произошла ошибка при генерации завтраков. Попробуйте еще раз.")
 
 #endregion Завтраки
 
